@@ -207,6 +207,7 @@ class LocalWindowAttention(torch.nn.Module):
         H = W = self.resolution
         B, C, H_, W_ = x.shape
         # Only check this for classifcation models
+        # import pdb;pdb.set_trace()
         assert H == H_ and W == W_, 'input feature has wrong size, expect {}, got {}'.format((H, W), (H_, W_))
                
         if H <= self.window_resolution and W <= self.window_resolution:
@@ -260,6 +261,7 @@ class EfficientViTBlock(torch.nn.Module):
         super().__init__()
             
         self.dw0 = Residual(Conv2d_BN(ed, ed, 3, 1, 1, groups=ed, bn_weight_init=0., resolution=resolution))
+        #import pdb;pdb.set_trace()
         self.ffn0 = Residual(FFN(ed, int(ed * 2), resolution))
  
         if type == 's':

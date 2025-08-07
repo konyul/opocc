@@ -38,5 +38,52 @@ class OccHead(BaseModule):
             return logits_lvl0
             # logits = self.mlp_occs[0](xyz_volumes.permute(0,2,3,4,1))
             # return logits
-                
-        
+
+
+@MODELS.register_module()
+class OccUncertaintyHead(BaseModule):
+    def __init__(self,
+                 channels,
+                 num_classes):
+        super(OccUncertaintyHead, self).__init__()
+        self.channels = channels
+        self.num_cls = num_classes        
+        self.mlp_occs = nn.ModuleList()
+        self.uncertainty_mlp_occs = nn.ModuleList()
+        for i in range(len(self.channels)):
+            mlp_occ = nn.Sequential(
+                nn.Linear(self.channels[i], self.channels[i]),
+                nn.ReLU(),
+                nn.Linear(self.channels[i], self.channels[i]),
+                nn.ReLU(),
+                nn.Linear(self.channels[i], self.num_cls)
+            )
+            self.mlp_occs.append(mlp_occ)
+        for i in range(len(self.channels)):
+            uncertainty_mlp_occs = nn.Sequential(
+                nn.Linear(self.channels[i], self.channels[i]),
+                nn.ReLU(),
+                nn.Linear(self.channels[i], self.channels[i]),
+                nn.ReLU(),
+                nn.Linear(self.channels[i], 1)
+            )
+            self.uncertainty_mlp_occs.append(uncertainty_mlp_occs)
+    
+    @autocast('cuda',torch.float32)
+    def forward(self, xyz_volumes):        
+        if self.training:
+            logits = []
+            for mlp_occ,xyz_volume in zip(self.mlp_occs, xyz_volumes):
+                logit = mlp_occ(xyz_volume.permute(0,2,3,4,1))
+                logits.append(logit)
+            uncertainties = []
+            for uncertainty_mlp_occ,xyz_volume in zip(self.uncertainty_mlp_occs, xyz_volumes):
+                uncertainty = uncertainty_mlp_occ(xyz_volume.permute(0,2,3,4,1))
+                uncertainties.append(uncertainty)
+            # logits = self.mlp_occs[0](xyz_volumes.permute(0,2,3,4,1))
+            return logits, uncertainties
+        else:
+            logits_lvl0 = self.mlp_occs[0](xyz_volumes[0].permute(0,2,3,4,1))
+            return logits_lvl0
+            # logits = self.mlp_occs[0](xyz_volumes.permute(0,2,3,4,1))
+            # return logits

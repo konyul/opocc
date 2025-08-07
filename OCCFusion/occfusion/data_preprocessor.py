@@ -7,7 +7,7 @@ import torch.nn as nn
 from PIL import Image
 from torch import Tensor
 from torch.nn import functional as F
-
+import matplotlib.pyplot as plt
 from mmdet3d.models import Det3DDataPreprocessor
 from mmdet.models.utils.misc import samplelist_boxtype2tensor
 from mmdet3d.models.data_preprocessors.voxelize import dynamic_scatter_3d
@@ -17,6 +17,58 @@ from mmdet3d.structures.det3d_data_sample import SampleList
 
 @MODELS.register_module()
 class OccFusionDataPreprocessor(Det3DDataPreprocessor):
+    
+    def visualize_raw_pointcloud_bev(self, points_list, save_path=None):
+        """
+        원본 Point cloud를 bird's eye view로 시각화합니다.
+        
+        Args:
+            points_list (List[Tensor]): List of raw point clouds
+            save_path (str, optional): 이미지를 저장할 경로
+        """
+        plt.figure(figsize=(15, 5 * len(points_list)))
+        
+        for batch_idx, points in enumerate(points_list):
+            # CUDA 텐서를 CPU로 이동 후 넘파이로 변환
+            points = points.cpu().numpy()
+            
+            plt.subplot(len(points_list), 1, batch_idx + 1)
+            
+            # x, y 좌표 추출
+            x = points[:, 0]  # x coordinates
+            y = points[:, 1]  # y coordinates
+            
+            # scatter plot 생성
+            scatter = plt.scatter(x, y, s=1, c=points[:, 2], cmap='viridis', alpha=0.5)
+            plt.colorbar(scatter, label='Z height')
+            
+            # plot 설정
+            plt.title(f'Raw Point Cloud BEV - Batch {batch_idx}')
+            plt.xlabel('X axis (meters)')
+            plt.ylabel('Y axis (meters)')
+            plt.grid(True)
+            
+            # 축 범위 자동 설정을 위해 데이터의 min/max 사용
+            x_min, x_max = points[:, 0].min(), points[:, 0].max()
+            y_min, y_max = points[:, 1].min(), points[:, 1].max()
+            
+            # 여백 추가
+            margin = 2
+            plt.xlim([x_min - margin, x_max + margin])
+            plt.ylim([y_min - margin, y_max + margin])
+
+        plt.tight_layout()
+        
+        if save_path:
+            plt.savefig(f'raw_{save_path}')
+            print(f"Saved raw point cloud visualization to raw_{save_path}")
+        else:
+            plt.show()
+        
+        plt.close()
+
+    
+    
     
     def simple_process(self, data: dict, training: bool = False) -> dict:
         """Perform normalization, padding and bgr2rgb conversion for img data
@@ -38,6 +90,8 @@ class OccFusionDataPreprocessor(Det3DDataPreprocessor):
         batch_inputs = dict()
 
         if 'points' in inputs:
+            #self.visualize_raw_pointcloud_bev(inputs['points'], save_path="pointcloud_bev_fov.png")
+            #import pdb; pdb.set_trace()
             batch_inputs['points'] = inputs['points']
                 
             if self.voxel:
@@ -111,6 +165,9 @@ class OccFusionDataPreprocessor(Det3DDataPreprocessor):
         
         if 'occ_semantickitti_masked' in data['inputs']:
             batch_inputs['occ_semantickitti_masked'] = data['inputs']['occ_semantickitti_masked']
+
+        if 'occ_trajectory' in data['inputs']:
+            batch_inputs['occ_trajectory'] = data['inputs']['occ_trajectory']
         
         if 'imgs' in inputs:
             imgs = inputs['imgs']

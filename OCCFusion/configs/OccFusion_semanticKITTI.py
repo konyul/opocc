@@ -1,7 +1,7 @@
 _base_ = ['_base_/default_runtime.py']
 custom_imports = dict(imports=['occfusion'], allow_failed_imports=False)
 
-load_from = 'ckpt/OccFusion_Cam_Lidar_semanticKITTI_ckpt_new_eval/epoch_15.pth'
+# load_from = 'ckpt/OccFusion_Cam_Lidar_semanticKITTI_ckpt_new_eval/epoch_15.pth'
 
 dataset_type = 'SemanticKittiSegDataset'
 data_root = 'data/semantickitti'

@@ -43,6 +43,7 @@ class MultiScaleInverseMatrixVT(BaseModule):
         self.refines = nn.ModuleList()
         
         for i in range(len(self.in_channels)):
+            torch.cuda.empty_cache()
             refine = nn.Sequential(
                 nn.Conv3d(self.in_channels[i],self.in_channels[i],kernel_size=3,padding=1),
                 nn.BatchNorm3d(self.in_channels[i]),
@@ -135,25 +136,6 @@ class MultiScaleInverseMatrixVT(BaseModule):
             self.imvts.append(imvt)
             self.up_samples.append(up_sample)
                 
-    @autocast('cuda',torch.float32)
-    def forward(self, img_feats, img_metas):
-        
-        cam_xyz_feats = []
-        for i in range(len(self.grid_size)):
-            cam_xyz_feat = self.imvts[i](img_feats[i], img_metas)
-            cam_xyz_feats.append(cam_xyz_feat)
-
-        xyz_volumes = []
-        for i in range(len(cam_xyz_feats),-1,-1):
-            if i == 3:
-                xyz_volume = self.refines[i](cam_xyz_feats[i-1])
-            elif i == 0:
-                xyz_volume = self.refines[i](self.up_samples[i](xyz_volumes[-1]))
-            else:
-                xyz_volume = self.refines[i](cam_xyz_feats[i-1] + self.up_samples[i](xyz_volumes[-1]))
-            xyz_volumes.append(xyz_volume)
-        
-        return xyz_volumes[::-1]
     
     @autocast('cuda',torch.float32)
     def forward_two(self, img_feats, img_metas, lidar_xyz_feat):
@@ -161,14 +143,19 @@ class MultiScaleInverseMatrixVT(BaseModule):
         
         merged_xyz_feats = []
         for i in range(len(self.grid_size)):
+            
+            #print(f"Step {i}: img_feats[i] shape: {img_feats[i].shape}")
+            #print(f"Step {i}: lidar_xyz_feat shape: {lidar_xyz_feat.shape}")
+            #print(f"Step {i}: lidar_xy_feat shape: {lidar_xy_feat.shape}")
+
             lidar_xyz_feat = self.lidar_xyz_refines[i](lidar_xyz_feat)
             lidar_xy_feat = self.lidar_xy_refines[i](lidar_xy_feat)
             merged_xyz_feat = self.imvts[i].forward_two(img_feats[i], 
                                                         img_metas, 
                                                         lidar_xyz_feat, 
                                                         lidar_xy_feat)
+            #print(f"Step {i}: merged_xyz_feat shape: {merged_xyz_feat.shape}")
             merged_xyz_feats.append(merged_xyz_feat)
-
         xyz_volumes = []
         for i in range(len(merged_xyz_feats),-1,-1):
             if i == 3:
@@ -178,39 +165,8 @@ class MultiScaleInverseMatrixVT(BaseModule):
             else:
                 xyz_volume = self.refines[i](merged_xyz_feats[i-1] + self.up_samples[i](xyz_volumes[-1]))
             xyz_volumes.append(xyz_volume)
-        
         return xyz_volumes[::-1]
     
-    @autocast('cuda',torch.float32)
-    def forward_three(self, img_feats, img_metas, lidar_xyz_feat, radar_xyz_feat):
-        lidar_xy_feat = lidar_xyz_feat.mean(dim=4)
-        radar_xy_feat = radar_xyz_feat.mean(dim=4)
-        
-        merged_xyz_feats = []
-        for i in range(len(self.grid_size)):
-            lidar_xyz_feat = self.lidar_xyz_refines[i](lidar_xyz_feat)
-            radar_xyz_feat = self.radar_xyz_refines[i](radar_xyz_feat)
-            lidar_xy_feat = self.lidar_xy_refines[i](lidar_xy_feat)
-            radar_xy_feat = self.radar_xy_refines[i](radar_xy_feat)
-            merged_xyz_feat = self.imvts[i].forward_three(img_feats[i], 
-                                                          img_metas, 
-                                                          lidar_xyz_feat, 
-                                                          lidar_xy_feat,
-                                                          radar_xyz_feat,
-                                                          radar_xy_feat)
-            merged_xyz_feats.append(merged_xyz_feat)
-
-        xyz_volumes = []
-        for i in range(len(merged_xyz_feats),-1,-1):
-            if i == 3:
-                xyz_volume = self.refines[i](merged_xyz_feats[i-1])
-            elif i == 0:
-                xyz_volume = self.refines[i](self.up_samples[i](xyz_volumes[-1]))
-            else:
-                xyz_volume = self.refines[i](merged_xyz_feats[i-1] + self.up_samples[i](xyz_volumes[-1]))
-            xyz_volumes.append(xyz_volume)
-
-        return xyz_volumes[::-1]
     
 class SingleScaleInverseMatrixVT(BaseModule):
     def __init__(self,
@@ -395,18 +351,42 @@ class SingleScaleInverseMatrixVT(BaseModule):
         # create vt matrix with sparse matrix
         valid_idx_xyz = torch.nonzero(ref_points_xyz > 0)
         valid_idx_z = torch.nonzero(ref_points_z > 0)
-        
-        idx_xyz = torch.stack([ref_points_xyz[valid_idx_xyz[:, 0],valid_idx_xyz[:, 1]],valid_idx_xyz[:, 0]],dim=0).unique(dim=1)
+
+        # Process valid_idx_xyz in chunks
+        chunk_size = 100000
+        num_chunks = (valid_idx_xyz.shape[0] + chunk_size - 1) // chunk_size
+
+        idx_xyz_list = []
+        for i in range(num_chunks):
+            chunk = valid_idx_xyz[i * chunk_size:(i + 1) * chunk_size]
+            idx_chunk = torch.stack([ref_points_xyz[chunk[:, 0], chunk[:, 1]], chunk[:, 0]], dim=0).unique(dim=1)
+            idx_xyz_list.append(idx_chunk)
+
+        idx_xyz = torch.cat(idx_xyz_list, dim=1).unique(dim=1)
+
+        # Create sparse tensor for xyz
         v_xyz = torch.ones(idx_xyz.shape[1]).to(img_feat.device)
         vt_xyz = torch.sparse_coo_tensor(indices=idx_xyz, values=v_xyz, size=[Nc * H * W, X * Y * Z])
         div_xyz = vt_xyz.sum(0).to_dense().clip(min=1)
-        
-        idx_xy = torch.stack([ref_points_z[valid_idx_z[:, 0],valid_idx_z[:, 1]],valid_idx_z[:, 0]],dim=0).unique(dim=1)
+
+        # Process valid_idx_z in chunks
+        num_chunks_z = (valid_idx_z.shape[0] + chunk_size - 1) // chunk_size
+
+        idx_xy_list = []
+        for i in range(num_chunks_z):
+            chunk_z = valid_idx_z[i * chunk_size:(i + 1) * chunk_size]
+            idx_chunk_z = torch.stack([ref_points_z[chunk_z[:, 0], chunk_z[:, 1]], chunk_z[:, 0]], dim=0).unique(dim=1)
+            idx_xy_list.append(idx_chunk_z)
+
+        idx_xy = torch.cat(idx_xy_list, dim=1).unique(dim=1)
+
+        # Create sparse tensor for xy
         v_xy = torch.ones(idx_xy.shape[1]).to(img_feat.device)
         vt_xy = torch.sparse_coo_tensor(indices=idx_xy, values=v_xy, size=[Nc * H * W, X * Y])
         div_xy = vt_xy.sum(0).to_dense().clip(min=1)
-        
+
         return vt_xyz, vt_xy, div_xyz, div_xy, valid_cams_idx
+
 
     @autocast('cuda',torch.float32)
     def forward(self, 
@@ -498,18 +478,19 @@ class SingleScaleInverseMatrixVT(BaseModule):
             cam_xy_feat = cam_xy.view(C, X, Y)
             cam_xyz_feats.append(cam_xyz_feat)
             cam_xy_feats.append(cam_xy_feat)
-        
+
         cam_xyz_feats = torch.stack(cam_xyz_feats)
         cam_xy_feats = torch.stack(cam_xy_feats)
         cam_xyz_feats = self.down_conv3d(cam_xyz_feats)
         cam_xy_feats = self.xy_conv(cam_xy_feats)
         
         if self.use_lidar:
+            
             cam_atten_3d = self.cam_atten_3D(cam_xyz_feats)
             cam_atten_2d = self.cam_atten_2D(cam_xy_feats)
             lidar_atten_3d = self.lidar_atten_3D(lidar_xyz_feat)
             lidar_atten_2d = self.lidar_atten_2D(lidar_xy_feat)
-            
+
             cam_xyz_feats = lidar_atten_3d * cam_xyz_feats
             cam_xy_feats = lidar_atten_2d * cam_xy_feats
             lidar_xyz_feat = cam_atten_3d * lidar_xyz_feat
@@ -520,7 +501,6 @@ class SingleScaleInverseMatrixVT(BaseModule):
         
         merged_xy_feat = torch.cat([cam_xy_feats,lidar_xy_feat],dim=1)
         merged_xy_feat = self.xy_fusion(merged_xy_feat)
-        
         # Apply ASPP on final 3D volume BEV slice
         merged_bev = self.bev_attn_layer(merged_xy_feat)
         merged_bev = self.aspp_xy(merged_bev)

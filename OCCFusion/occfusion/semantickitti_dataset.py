@@ -24,16 +24,13 @@ class SemanticKittiSegDataset(BaseDataset):
         test_mode (bool): Store `True` when building test or val dataset.
     """
     METAINFO = {
-        'classes':
-        ('IoU', 'car', 'bicycle','motorcycle','truck','other-vehicle','person','bicyclist','motorcyclist','road',
-         'parking','sidewalk','other-ground','building','fence','vegetation','trunk','terrain','pole','traffic-sign'),
-        'ignore_index':
-            255,
-        'label_mapping':
-        dict([(0,0),(1,0),(10,1),(11,2),(13,5),(15,3),(16,5),(18,4),(20,5),(30,6),(31,7),
-              (32,8),(40,9),(44,10),(48,11),(49,12),(50,13),(51,14),(52,0),(60,9),(70,15),
-              (71,16),(72,17),(80,18),(81,19),(99,0),(252,1),(253,7),(254,6),(255,8),(256,5),
-              (257,5),(258,4),(259,5)])
+        'classes': (  # 실제 사용하려는 클래스로 수정
+            'IoU (Occupied)',
+            'Traverse',
+            'Non-traverse'
+        ),
+        'ignore_index': 255,
+        'label_mapping': dict([(0,0),(1,1), (2,2)])  # 필요한 매핑으로 수정
     }
 
     def __init__(self,
@@ -46,6 +43,7 @@ class SemanticKittiSegDataset(BaseDataset):
             i: cat_name
             for i, cat_name in enumerate(self.METAINFO['classes'])
         })
+        #import pdb;pdb.set_trace()
         super().__init__(
             ann_file=ann_file,
             data_root=data_root,
@@ -67,16 +65,21 @@ class SemanticKittiSegDataset(BaseDataset):
             List[dict] or dict: Has `ann_info` in training stage. And
             all path has been converted to absolute path.
         """
-
+        
         data_list = []
-        info['img_path'] = osp.join(self.data_prefix['img_path'],info['img_path'])
-        info['voxel_gt_path'] = osp.join(self.data_prefix['img_path'],info['voxel_gt_path'])
-        info['voxel_invalid_path'] = osp.join(self.data_prefix['img_path'],info['voxel_invalid_path'])
-        info['calib_path'] = osp.join(self.data_prefix['img_path'],info['calib_path'])
-
+        info['img_path'] = osp.join(self.data_prefix['img_path'], info['img_path'])
+        info['pts_semantic_mask_path'] = osp.join(self.data_prefix['pts_semantic_mask_path'],info['pts_semantic_mask_path'])
+        info['lidar_points']['lidar_path'] = osp.join(self.data_prefix['lidar'], info['lidar_points']['lidar_path'])
+        #info['voxel_gt_path'] = osp.join(self.data_prefix['img_path'],info['voxel_gt_path'])
+        #info['voxel_invalid_path'] = osp.join(self.data_prefix['img_path'],info['voxel_invalid_path'])
+        info['transforms_path'] = osp.join(self.data_prefix['img_path'],info['transforms_path'])
+        info['calib_txt_path'] = osp.join(self.data_prefix['img_path'],info['calib_txt_path'])
+        info['camera_info_path'] = osp.join(self.data_prefix['img_path'],info['camera_info_path'])
+        if 'geom_occ_path' in info:
+            info['geom_occ_path'] = osp.join(self.data_prefix['img_path'],info['geom_occ_path'])
         # only be used in `PointSegClassMapping` in pipeline
         # to map original semantic class to valid category ids.
-        info['label_mapping'] = self.metainfo['label_mapping']
+        #info['label_mapping'] = self.metainfo['label_mapping']
 
         # 'eval_ann_info' will be updated in loading transforms
         if self.test_mode:

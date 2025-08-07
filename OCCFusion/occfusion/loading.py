@@ -12,48 +12,82 @@ from mmdet3d.datasets.transforms import LoadMultiViewImageFromFiles, Pack3DDetIn
 from mmdet3d.registry import TRANSFORMS
 from nuscenes.utils.data_classes import RadarPointCloud
 import pykitti.utils as utils
+import yaml
+from scipy.spatial.transform import Rotation
 
 @TRANSFORMS.register_module()
 class SemanticKITTI_Image_Load(LoadMultiViewImageFromFiles):
+    
+    def get_cam_mtx(self,filepath):
+        data = np.loadtxt(filepath)
+        P = np.zeros((3,3))
+        P[0,0] = data[0]
+        P[1,1] = data[1]
+        P[2,2] = 1
+        P[0,2] = data[2]
+        P[1,2] = data[3]
+        return P
+    
+    def get_lidar2cam_mtx(self,filepath):
+        with open(filepath,'r') as f:
+            data = yaml.load(f,Loader= yaml.Loader)
+        q = data['os1_cloud_node-pylon_camera_node']['q']
+        q = np.array([q['x'],q['y'],q['z'],q['w']])
+        t = data['os1_cloud_node-pylon_camera_node']['t']
+        t = np.array([t['x'],t['y'],t['z']])
+        R_vc = Rotation.from_quat(q)
+        R_vc = R_vc.as_matrix()
+
+        RT = np.eye(4,4)
+        RT[:3,:3] = R_vc
+        RT[:3,-1] = t
+        RT = np.linalg.inv(RT)
+        return RT
+    
     def transform(self, result: dict) -> Optional[dict]:
-        calib_filepath = result['calib_path']
-        filedata = utils.read_calib_file(calib_filepath)
-        P_rect_20 = np.reshape(filedata['P2'], (3, 4))
-        T2 = np.eye(4)
-        T2[0, 3] = P_rect_20[0, 3] / P_rect_20[0, 0]
-        T_cam0_velo = np.reshape(filedata['Tr'], (3, 4))
-        T_cam0_velo = np.vstack([T_cam0_velo, [0, 0, 0, 1]])
-        T_cam2_velo = T2.dot(T_cam0_velo)
-        K_P2 = np.eye(4)
-        K_P2[:3,:3] = P_rect_20[:3,:3]
-        lidar2img = K_P2.dot(T_cam2_velo)
-        result['lidar2img'] = np.stack([lidar2img], axis=0)
+        #print(result)
+        Tr_4x4 = self.get_lidar2cam_mtx(result['transforms_path'])
+        K_3x3 = self.get_cam_mtx(result['camera_info_path'])
+        P_4x4 = np.eye(4)
+        P_4x4[:3, :3] = K_3x3
+        calib_mtx = P_4x4 @ Tr_4x4
+        result['lidar2img'] = np.stack([calib_mtx], axis=0)
         
         img_byte = get(result['img_path'], backend_args=self.backend_args) 
         img = mmcv.imfrombytes(img_byte, flag=self.color_type)
         result['img'] = [img]
         
+        #import pdb; pdb.set_trace()
+        img_path = result.get('img_path', '')
+        if img_path:
+            parts = img_path.split(os.sep)
+            # 예를 들어, parts[0]가 sample_id가 되고, 파일명에서 frame_id를 추출
+            sample_id = parts[8]  # 예: "00004"
+            file_name = os.path.basename(img_path)  # 예: "frame000400.png"
+            frame_id = None
+            if file_name.startswith("frame"):
+                # "frame" 이후 6자리 숫자가 frame_id라고 가정
+                frame_id = file_name[5:11]
+            result['sample_id'] = sample_id
+            result['frame_id'] = frame_id
+            
+
+
         return result
+
 
 @TRANSFORMS.register_module()
 class LoadSemanticKITTI_Occupancy(BaseTransform):
     def get_remap_lut(self, label_map):
         maxkey = max(label_map.keys())
-
-        # +100 hack making lut bigger just in case there are unknown labels
-        remap_lut = np.zeros((maxkey + 100), dtype=np.int32)
-        remap_lut[list(label_map.keys())] = list(label_map.values())
-
-        # in completion we have to distinguish empty and invalid voxels.
-        # Important: For voxels 0 corresponds to "empty" and not "unlabeled".
-        remap_lut[remap_lut == 0] = 255  # map 0 to 'invalid'
-        remap_lut[0] = 0  # only 'empty' stays 'empty'.
-
+        # 기본값을 255로 채워서, label_map에 없는 인덱스는 모두 255가 되도록 함
+        remap_lut = np.full((maxkey + 1), 255, dtype=np.int32)
+        # label_map 예시: {0: 1, 1: 2, 255: 255}
+        for key, value in label_map.items():
+            remap_lut[key] = value
         return remap_lut
-        
-    
+
     def unpack(self, compressed):
-        ''' given a bit encoded voxel grid, make a normal voxel grid out of it.  '''
         uncompressed = np.zeros(compressed.shape[0] * 8, dtype=np.uint8)
         uncompressed[::8] = compressed[:] >> 7 & 1
         uncompressed[1::8] = compressed[:] >> 6 & 1
@@ -63,57 +97,138 @@ class LoadSemanticKITTI_Occupancy(BaseTransform):
         uncompressed[5::8] = compressed[:] >> 2 & 1
         uncompressed[6::8] = compressed[:] >> 1 & 1
         uncompressed[7::8] = compressed[:] & 1
-
         return uncompressed
-    
+
     def transform(self, result: dict) -> dict:
-        gt = np.fromfile(result['voxel_gt_path'],dtype=np.uint16).astype(np.float32)
-        invalid = np.fromfile(result['voxel_invalid_path'], dtype=np.uint8)
-        invalid = self.unpack(invalid)
-        remap_lut = self.get_remap_lut(result['label_mapping'])
-        gt = remap_lut[gt.astype(np.uint16)].astype(np.float32)  # Remap 20 classes semanticKITTI SSC
+       
+        gt = np.fromfile(result['pts_semantic_mask_path'], dtype=np.uint8).astype(np.float32)
+        #print(f"Original data size: {gt.shape[0]}")
+        #print(f"Expected size: {192 * 256 * 40}")
+        #print(f"File path: {result['pts_semantic_mask_path']}")
         
-        gt[np.isclose(invalid, 1)] = 255  # Setting to unknown all voxels marked on invalid mask...
-        gt_masked = gt.reshape([256, 256, 32])
+        #print(f"Unique values: {np.unique(gt)}")
+
+        if 'voxel_invalid_path' in result and result['voxel_invalid_path'] is not None:
+            invalid = np.fromfile(result['voxel_invalid_path'], dtype=np.uint8)
+            invalid = self.unpack(invalid)
+            # invalid==1 => 255
+            gt[np.isclose(invalid, 1)] = 255
+
+        # (선택) remap lut
+        #if 'label_mapping' in result:
+            #remap_lut = self.get_remap_lut(result['label_mapping'])
+            #gt = remap_lut[gt.astype(np.uint16)].astype(np.float32)
+
+        # reshape
+        gt_masked = gt.reshape([256, 256, 32] ) 
+
         gt_masked = torch.from_numpy(gt_masked)
-        idx_masked = torch.where(gt_masked > 0)
-        label_masked = gt_masked[idx_masked[0],idx_masked[1],idx_masked[2]]
-        semantickitti_occ_masked = torch.stack([idx_masked[0],idx_masked[1],idx_masked[2],label_masked],dim=1).long()
+
+        idx_masked = torch.where(gt_masked != 255)
+
+        # idx_masked now includes positions with 0,1,2,3
+        label_masked = gt_masked[idx_masked[0], idx_masked[1], idx_masked[2]]
         
-        # result['occ_semantickitti'] = semantickitti_occ
+        # semantickitti_occ_masked = [x, y, z, label]
+        semantickitti_occ_masked = torch.stack(
+            [idx_masked[0], idx_masked[1], idx_masked[2], label_masked], dim=1
+        ).long()
+
+        #print(semantickitti_occ_masked.shape)
         result['occ_semantickitti_masked'] = semantickitti_occ_masked
+        #result['occ_trajectory'] = np.load(result['geom_occ_path'].replace("geom","save_0315"))['filtered_mask']
         return result
-        
+
     def __repr__(self) -> str:
-        """str: Return a string that describes the module."""
-        repr_str = self.__class__.__name__
-        return repr_str
+        return self.__class__.__name__
 
 
 @TRANSFORMS.register_module()
 class LoadSemanticKITTI_Lidar(BaseTransform):
     def __init__(self,
-                pc_range=None):
-       self.pc_range = pc_range
-    
+                 pc_range=None,
+                 with_fov=False,
+                 img_width=1920,
+                 img_height=1200):
+        self.pc_range = pc_range
+        self.with_fov = with_fov
+        self.img_width = img_width
+        self.img_height = img_height
+
+    def project_points_to_image(self, points, lidar2img):
+        """
+        라이다 좌표계의 포인트를 이미지 평면에 투영
+        """
+        if len(points) == 0:
+            return np.array([])
+            
+        # homogeneous coordinates로 변환
+        points_homo = np.hstack([points, np.ones((points.shape[0], 1))])  # (N, 4)
+        
+        # 라이다 좌표계 -> 이미지 평면으로 변환
+        proj = (lidar2img @ points_homo.T).T  # (N, 3)
+        
+        # normalize
+        depths = proj[:, 2]
+        mask_valid = depths > 0
+
+        if not mask_valid.any():
+            return np.array([])
+            
+        u = proj[:, 0] / depths
+        v = proj[:, 1] / depths
+        
+        # 이미지 범위 내 점 선택 (mask_valid인 점들 중에서)
+        mask_img = mask_valid & (u >= 0) & (u < self.img_width) & (v >= 0) & (v < self.img_height)
+        valid_indices = np.where(mask_img)[0]
+        
+        return valid_indices
+
     def transform(self, result: dict) -> dict:
-        lidar_path = result['voxel_gt_path'].split('voxels')[0] + 'velodyne' + result['voxel_gt_path'].split('voxels')[1].split('.label')[0] + '.bin'
+        # 라이다 포인트 로드
+        lidar_path = result['lidar_points']['lidar_path']
         pts = utils.load_velo_scan(lidar_path)
         pts = torch.from_numpy(pts)
-        idx = torch.where((pts[:,0] > self.pc_range[0])
-                        & (pts[:,1] > self.pc_range[1])
-                        & (pts[:,2] > self.pc_range[2])
-                        & (pts[:,0] < self.pc_range[3])
-                        & (pts[:,1] < self.pc_range[4])
-                        & (pts[:,2] < self.pc_range[5]))
-        pts = pts[idx]
+
+        # pc_range로 먼저 필터링
+        if self.pc_range is not None:
+            idx = torch.where(
+                (pts[:, 0] > self.pc_range[0]) &
+                (pts[:, 1] > self.pc_range[1]) &
+                (pts[:, 2] > self.pc_range[2]) &
+                (pts[:, 0] < self.pc_range[3]) &
+                (pts[:, 1] < self.pc_range[4]) &
+                (pts[:, 2] < self.pc_range[5])
+            )
+            pts = pts[idx[0]]
+
+        # FOV 필터링
+        if self.with_fov:
+            if 'lidar2img' not in result:
+                raise KeyError("lidar2img matrix is required for FOV filtering")
+            
+            # Numpy로 변환하여 projection 수행
+            pts_np = pts.numpy()
+            lidar2img = result['lidar2img']
+            
+            # FOV 내 포인트 인덱스 얻기
+            valid_indices = self.project_points_to_image(pts_np[:, :3], lidar2img)
+            
+            # 유효한 포인트만 선택
+            if len(valid_indices) > 0:
+                pts = pts[valid_indices]
+            else:
+                pts = pts.new_zeros((0, pts.shape[1]))
+
         result['points'] = pts
-        
         return result
-        
+
     def __repr__(self) -> str:
-        """str: Return a string that describes the module."""
         repr_str = self.__class__.__name__
+        repr_str += f'(pc_range={self.pc_range}, '
+        repr_str += f'with_fov={self.with_fov}, '
+        repr_str += f'img_width={self.img_width}, '
+        repr_str += f'img_height={self.img_height})'
         return repr_str
 
 @TRANSFORMS.register_module()

@@ -54,7 +54,7 @@ class SVFE(BaseModule):
         super(SVFE, self).__init__()
         self.vfe_1 = VFE(input_dim,16,num_pts)
         self.vfe_2 = VFE(16,32,num_pts)
-        self.fcn = FCN(32,64)
+        self.fcn = FCN(32,64) #(32,64)
         self.grid_size = grid_size
         self.bn = nn.BatchNorm1d(input_dim)
         
