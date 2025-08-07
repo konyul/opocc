@@ -1,33 +1,46 @@
+# Use Rellis-3D dataset and runtime defaults
 _base_ = [
-    '../datasets/custom_nus-3d.py',
+    '../datasets/custom_rellis-3d.py',
     '../_base_/default_runtime.py'
 ]
+
+# Input modality
 input_modality = dict(
     use_lidar=True,
     use_camera=True,
     use_radar=False,
     use_map=False,
     use_external=False)
+
 plugin = True
 plugin_dir = "projects/occ_plugin/"
-img_norm_cfg = None
-occ_path = "./data/nuScenes-Occupancy"
-depth_gt_path = './data/depth_gt'
+
+# Image normalization
+img_norm_cfg = dict(
+    mean=[123.675, 116.28, 103.53],
+    std=[58.395, 57.12, 57.375],
+    to_rgb=True)
+
+# Dataset paths
+data_root = 'data/rellis-3d/'
+occ_path = data_root + 'occupancy'
+depth_gt_path = data_root + 'depth_gt'
 train_ann_file = "./data_infos/occfusion_train_baseline.pkl"
 val_ann_file = "./data_infos/occfusion_val_final_0_2000.pkl"
-# For nuScenes we usually do 10-class detection
-class_names = [
-    'traverse', 'non_traverse'
-]
+
+# Rellis-3D classes (empty + traversable + non-traversable)
+class_names = ['traverse', 'non_traverse']
+num_cls = 3  # includes empty
+empty_idx = 0
+
+# Point cloud / voxel settings
 point_cloud_range = [-25.6, -12.8, -1.6, 0.0, 12.8, 1.6]
 occ_size = [256, 256, 32]
-lss_downsample = [4, 4, 4]  # [128 128 10]
-voxel_x = (point_cloud_range[3] - point_cloud_range[0]) / occ_size[0]  # 0.4
+lss_downsample = [4, 4, 4]
+voxel_x = (point_cloud_range[3] - point_cloud_range[0]) / occ_size[0]
 voxel_y = (point_cloud_range[4] - point_cloud_range[1]) / occ_size[1]
 voxel_z = (point_cloud_range[5] - point_cloud_range[2]) / occ_size[2]
 voxel_channels = [80, 160, 320, 640]
-empty_idx = 0  # noise 0-->255
-num_cls = 3  # 0 free, 1-16 obj
 visible_mask = False
 
 cascade_ratio = 4
@@ -35,17 +48,14 @@ sample_from_voxel = False
 sample_from_img = False
 
 dataset_type = 'rellisOCCDataset'
-data_root = 'data/rellis-3d/'
 file_client_args = dict(backend='disk')
 
-data_config={
-    'cams': ['CAM_FRONT_LEFT', 'CAM_FRONT', 'CAM_FRONT_RIGHT',
-             'CAM_BACK_LEFT', 'CAM_BACK', 'CAM_BACK_RIGHT'],
-    'Ncams': 6,
-    # 'input_size': (256, 704),
-    'input_size': (896, 1600),
+# Rellis-3D uses a single front camera
+data_config = {
+    'cams': ['CAM_FRONT'],
+    'Ncams': 1,
+    'input_size': (864, 1600),
     'src_size': (900, 1600),
-    # image-view augmentation
     'resize': (-0.06, 0.11),
     'rot': (-5.4, 5.4),
     'flip': True,
@@ -92,21 +102,21 @@ model = dict(
                               numC_Trans=numC_Trans,
                               vp_megvii=False),
     pts_voxel_layer=dict(
-        max_num_points=10, 
+        max_num_points=10,
         point_cloud_range=point_cloud_range,
-        voxel_size=[0.1, 0.1, 0.1],  # xy size follow centerpoint
+        voxel_size=[0.1, 0.1, 0.1],
         max_voxels=(90000, 120000)),
-    pts_voxel_encoder=dict(type='HardSimpleVFE', num_features=5),
+    pts_voxel_encoder=dict(type='HardSimpleVFE', num_features=4),
     pts_middle_encoder=dict(
         type='SparseLiDAREnc8x',
         input_channel=4,
         base_channel=16,
         out_channel=numC_Trans,
         norm_cfg=dict(type='SyncBN', requires_grad=True),
-        sparse_shape_xyz=[1024, 1024, 80],  # hardcode, xy size follow centerpoint
-        ),
+        sparse_shape_xyz=[256, 256, 16],
+    ),
     occ_fuser=dict(
-        type='VisFuser',
+        type='ConvFuser',
         in_channels=numC_Trans,
         out_channels=numC_Trans,
     ),
@@ -126,7 +136,7 @@ model = dict(
         norm_cfg=dict(type='SyncBN', requires_grad=True),
     ),
     pts_bbox_head=dict(
-        type='OccHead',
+        type='OccHeadRellis',
         norm_cfg=dict(type='SyncBN', requires_grad=True),
         soft_weights=True,
         cascade_ratio=cascade_ratio,
@@ -140,59 +150,60 @@ model = dict(
         out_channel=num_cls,
         point_cloud_range=point_cloud_range,
         loss_weight_cfg=dict(
-            loss_voxel_ce_weight=1.0,
+            loss_voxel_ce_weight=10.0,
             loss_voxel_sem_scal_weight=1.0,
             loss_voxel_geo_scal_weight=1.0,
-            loss_voxel_lovasz_weight=1.0,
+            loss_voxel_lovasz_weight=0.0,
         ),
+        class_weight=[0.01, 5.0, 1.0],
+        balance_cls_weight=True,
     ),
     empty_idx=empty_idx,
 )
 
 bda_aug_conf = dict(
-            # rot_lim=(-22.5, 22.5),
-            rot_lim=(-0, 0),
-            scale_lim=(0.95, 1.05),
-            flip_dx_ratio=0.5,
-            flip_dy_ratio=0.5)
+    rot_lim=(-0, 0),
+    scale_lim=(0.95, 1.05),
+    flip_dx_ratio=0.5,
+    flip_dy_ratio=0.5)
 
 train_pipeline = [
     dict(type='LoadPointsFromFile',
-        coord_type='LIDAR',
-        load_dim=5,
-        use_dim=5),
+         coord_type='LIDAR',
+         load_dim=4,
+         use_dim=4),
     dict(type='LoadMultiViewImageFromFiles_BEVDet', is_train=True, data_config=data_config,
-                sequential=False, aligned=True, trans_only=False, depth_gt_path=depth_gt_path,
-                mmlabnorm=True, load_depth=True, img_norm_cfg=img_norm_cfg),
-    dict(
-        type='LoadAnnotationsBEVDepth',
-        bda_aug_conf=bda_aug_conf,
-        classes=class_names,
-        input_modality=input_modality),
-    dict(type='LoadOccupancy', to_float32=True, use_semantic=True, occ_path=occ_path, grid_size=occ_size, use_vel=False,
-            unoccupied=empty_idx, pc_range=point_cloud_range, cal_visible=visible_mask),
+         sequential=False, aligned=True, trans_only=False, depth_gt_path=depth_gt_path,
+         mmlabnorm=True, load_depth=True, img_norm_cfg=img_norm_cfg),
+    dict(type='LoadAnnotationsBEVDepth',
+         bda_aug_conf=bda_aug_conf,
+         classes=class_names,
+         input_modality=input_modality),
+    dict(type='LoadOccupancyRellis', to_float32=True, use_semantic=True, occ_path=occ_path,
+         grid_size=occ_size, use_vel=False, unoccupied=empty_idx,
+         pc_range=point_cloud_range, cal_visible=visible_mask),
     dict(type='OccDefaultFormatBundle3D', class_names=class_names),
     dict(type='Collect3D', keys=['img_inputs', 'gt_occ', 'points']),
 ]
 
 test_pipeline = [
     dict(type='LoadPointsFromFile',
-        coord_type='LIDAR',
-        load_dim=5,
-        use_dim=5),
+         coord_type='LIDAR',
+         load_dim=4,
+         use_dim=4),
     dict(type='LoadMultiViewImageFromFiles_BEVDet', data_config=data_config, depth_gt_path=depth_gt_path,
          sequential=False, aligned=True, trans_only=False, mmlabnorm=True, img_norm_cfg=img_norm_cfg),
-    dict(
-        type='LoadAnnotationsBEVDepth',
-        bda_aug_conf=bda_aug_conf,
-        classes=class_names,
-        input_modality=input_modality,
-        is_train=False),
-    dict(type='LoadOccupancy', to_float32=True, use_semantic=True, occ_path=occ_path, grid_size=occ_size, use_vel=False,
-        unoccupied=empty_idx, pc_range=point_cloud_range, cal_visible=visible_mask),
-    dict(type='OccDefaultFormatBundle3D', class_names=class_names, with_label=False), 
+    dict(type='LoadAnnotationsBEVDepth',
+         bda_aug_conf=bda_aug_conf,
+         classes=class_names,
+         input_modality=input_modality,
+         is_train=False),
+    dict(type='LoadOccupancyRellis', to_float32=True, use_semantic=True, occ_path=occ_path,
+         grid_size=occ_size, use_vel=False, unoccupied=empty_idx,
+         pc_range=point_cloud_range, cal_visible=visible_mask),
+    dict(type='OccDefaultFormatBundle3D', class_names=class_names, with_label=False),
     dict(type='Collect3D', keys=['img_inputs', 'gt_occ', 'points'],
-            meta_keys=['pc_range', 'occ_size', 'scene_token', 'lidar_token']),
+         meta_keys=['pc_range', 'occ_size', 'scene_token', 'lidar_token']),
 ]
 
 

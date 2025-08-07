@@ -3,7 +3,8 @@ from mmdet.datasets import DATASETS
 from mmdet3d.datasets import SemanticKITTIDataset
 import os
 from nuscenes.eval.common.utils import quaternion_yaw, Quaternion
-from projects.occ_plugin.utils.formating import cm_to_ious, format_SC_results, format_SSC_results
+from projects.occ_plugin.utils.formating import (
+    cm_to_ious, format_SC_results, format_SSC_results_rellis)
 import pickle
 @DATASETS.register_module()
 class rellisOCCDataset(SemanticKITTIDataset):
@@ -152,7 +153,7 @@ class rellisOCCDataset(SemanticKITTIDataset):
         ''' evaluate SSC '''
         evaluation_semantic = sum(results['SSC_metric'])
         ious = cm_to_ious(evaluation_semantic)
-        res_table, res_dic = format_SSC_results(ious, return_dic=True)
+        res_table, res_dic = format_SSC_results_rellis(ious, return_dic=True)
         for key, val in res_dic.items():
             eval_results['SSC_{}'.format(key)] = val
         if logger is not None:
@@ -163,7 +164,7 @@ class rellisOCCDataset(SemanticKITTIDataset):
         if 'SSC_metric_fine' in results.keys():
             evaluation_semantic = sum(results['SSC_metric_fine'])
             ious = cm_to_ious(evaluation_semantic)
-            res_table, res_dic = format_SSC_results(ious, return_dic=True)
+            res_table, res_dic = format_SSC_results_rellis(ious, return_dic=True)
             for key, val in res_dic.items():
                 eval_results['SSC_fine_{}'.format(key)] = val
             if logger is not None:

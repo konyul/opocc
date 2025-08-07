@@ -111,6 +111,34 @@ def format_SSC_results(mean_ious, return_dic=False):
     else:
         return x
 
+
+def format_SSC_results_rellis(mean_ious, return_dic=False):
+    """Format SSC results for the 3-class Rellis-3D dataset."""
+    class_map = {
+        0: 'empty',
+        1: 'traverse',
+        2: 'non_traverse',
+    }
+
+    x = PrettyTable()
+    x.field_names = ['class', 'IoU']
+    class_names = list(class_map.values())
+    class_ious = mean_ious
+    dic = {}
+
+    for cls_name, cls_iou in zip(class_names, class_ious):
+        dic[cls_name] = np.round(cls_iou, 3)
+        x.add_row([cls_name, np.round(cls_iou, 3)])
+
+    mean_non_empty = sum(mean_ious[1:]) / len(mean_ious[1:])
+    dic['mean'] = np.round(mean_non_empty, 3)
+    x.add_row(['mean', np.round(mean_non_empty, 3)])
+
+    if return_dic:
+        return x, dic
+    else:
+        return x
+
 def format_vel_results(mean_epe, return_dic=False):
     class_map = {
         0: 'barrier',
