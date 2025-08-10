@@ -41,8 +41,9 @@ class QuickCumsumCuda(torch.autograd.Function):
         kept[1:] = ranks[1:] != ranks[:-1]
         interval_starts = torch.where(kept)[0].int()
         interval_lengths = torch.zeros_like(interval_starts)
-        interval_lengths[:-1] = interval_starts[1:] - interval_starts[:-1]
-        interval_lengths[-1] = x.shape[0] - interval_starts[-1]
+        if interval_starts.numel() > 0:
+            interval_lengths[:-1] = interval_starts[1:] - interval_starts[:-1]
+            interval_lengths[-1] = x.shape[0] - interval_starts[-1]
         geom_feats = geom_feats.int()
 
         out = occ_pool_ext.occ_pool_forward(
