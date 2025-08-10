@@ -30,19 +30,21 @@ at::Tensor occ_pool_forward(
   int c = _x.size(1);
   int n_intervals = _interval_lengths.size(0);
   const at::cuda::OptionalCUDAGuard device_guard(device_of(_x));
-  const float* x = _x.data_ptr<float>();
-  const int* geom_feats = _geom_feats.data_ptr<int>();
-  const int* interval_lengths = _interval_lengths.data_ptr<int>();
-  const int* interval_starts = _interval_starts.data_ptr<int>();
-  
   auto options =
       torch::TensorOptions().dtype(_x.dtype()).device(_x.device());
   at::Tensor _out = torch::zeros({b, d, h, w, c}, options);
-  float* out = _out.data_ptr<float>();
-  occ_pool(
-    b, d, h, w, n, c, n_intervals, x,
-    geom_feats, interval_starts, interval_lengths, out
-  );
+  // If there are no points, skip launching the CUDA kernel.
+  if (n_intervals > 0 && n > 0) {
+    const float* x = _x.data_ptr<float>();
+    const int* geom_feats = _geom_feats.data_ptr<int>();
+    const int* interval_lengths = _interval_lengths.data_ptr<int>();
+    const int* interval_starts = _interval_starts.data_ptr<int>();
+    float* out = _out.data_ptr<float>();
+    occ_pool(
+      b, d, h, w, n, c, n_intervals, x,
+      geom_feats, interval_starts, interval_lengths, out
+    );
+  }
   return _out;
 }
 
@@ -68,21 +70,22 @@ at::Tensor occ_pool_backward(
   int c = _out_grad.size(4);
   int n_intervals = _interval_lengths.size(0);
   const at::cuda::OptionalCUDAGuard device_guard(device_of(_out_grad));
-  const float* out_grad = _out_grad.data_ptr<float>();
-  const int* geom_feats = _geom_feats.data_ptr<int>();
-  const int* interval_lengths = _interval_lengths.data_ptr<int>();
-  const int* interval_starts = _interval_starts.data_ptr<int>();
-
   auto options =
       torch::TensorOptions().dtype(_out_grad.dtype()).device(_out_grad.device());
   at::Tensor _x_grad = torch::zeros({n, c}, options);
-  float* x_grad = _x_grad.data_ptr<float>();
-  
-  occ_pool_grad(
-    b, d, h, w, n, c, n_intervals, out_grad,
-    geom_feats, interval_starts, interval_lengths, x_grad
-  );
-  
+  // Skip launching the CUDA kernel when there are no points.
+  if (n_intervals > 0 && n > 0) {
+    const float* out_grad = _out_grad.data_ptr<float>();
+    const int* geom_feats = _geom_feats.data_ptr<int>();
+    const int* interval_lengths = _interval_lengths.data_ptr<int>();
+    const int* interval_starts = _interval_starts.data_ptr<int>();
+    float* x_grad = _x_grad.data_ptr<float>();
+    occ_pool_grad(
+      b, d, h, w, n, c, n_intervals, out_grad,
+      geom_feats, interval_starts, interval_lengths, x_grad
+    );
+  }
+
   return _x_grad;
 }
 
